@@ -1,0 +1,134 @@
+// Developed by Pouyan Keshavarzian, Ph.D. Based on previous published works such as Giustolisi et al. 2011 Verilog-A modeling of SPAD statistical phenomena
+
+
+`include "constants.vams"
+`include "disciplines.vams"
+
+module spad_dcr(a, k, photon);
+inout a, k, photon;
+electrical a, k, photon;
+branch (k,a) SPAD;
+
+// CONSTANTS
+parameter real AD = 6e-5 from (0:inf); 			// Area of diode
+parameter real Rbrk =1.0K from [0:inf);			// Breakdown resistance... NOTE This value is critical for correct operation...
+parameter real phi=0.7 exclude 0;				// Parastic capacitance variables 
+parameter real Cj0=200e-11 from [0:inf);
+parameter real Cks=1e-12 from [0:inf);
+parameter real Cas=1e-12 from [0:inf);			// Not used 
+parameter real mj=0.5 from [0:inf);
+
+real VB;										// Breakdown voltage adjusted for temperature affects... not currently used
+parameter real VB0 = 30.0 from [0:inf);			// Breakdwon votage at room temp
+parameter real Is=1e-14 from (0:inf);			// Diode current	
+parameter real VBTC = 1.0e-3 from [0:inf);		// Beta temperature coeff. 
+parameter real Vn = 0.01; 						// normalization voltage for breakdown current calculation in static characterisitic
+ 
+parameter real T0 = 273.0 from [0:inf);			// Room temp
+parameter real T = 273.0 from [0:inf);			// Temp for simulation
+
+
+parameter real PhTh = 0.9; 						// Threshold voltage for the photon arrival avalanche generation (Can be whatever above 0)
+//parameter tcr_j;
+parameter real etaT = 0.131; 					// Eta empirical parameter which sets the exponentiial slope
+parameter real taucr_i = 8.7e-12; 				// mean carrier realease lifetime
+ 
+// parameter real ET1 = 0.253; 					// activation energy of the trap eV
+
+// CARRIER GENERATION
+integer counter_cg = 0;							// counter for number of thermally generated carriers				
+real tcg=13e-9; 								// some initial time for the first generated carrier
+parameter real tau_cg = 15e-9;					// mean value of carrier generation (expon distributed)
+parameter seed_cg = 419;						// seed value for carrier generation
+real deltatcg;									// delta time interval until the next generated carrier 
+real uniformProb; 								// Compare the triggering probability against a uniformally distributed random var for avalanche gen
+
+integer counter_dc = 0;							// DCR counter
+
+// CARRIER RELEASE
+real tcr_i; 									
+real deltatcr_i; 
+parameter seedcr_i = 20;
+parameter seedtr = 20;
+
+
+// AFTERPULSING
+
+// AVALANCHE STATIC AND DYNAMIC BEHAVIOUR VARIABLES
+integer aval; 									// avalanche flag
+real Ptr;  										// triggering probability of avalanche
+real Ibrk;										// breakdown current which is compared against Ilat 
+real Qj;										// Junction charge.. of which the time derivative is the dynamic current contribution along with other parasitics
+real Qks;										// cathode substrate parasitc
+real Qas;										// anose substrate parasitic... not used
+real Ispad;										// Spad current summed from all contributions
+real Ilat = 12e-6; 								// Latching current... Ibrk below this value will quench avalanche
+parameter real mIlat =  12e-6;					// mean value of Ilat
+parameter real sigIlat = 0.25e-6;				// stdev of Ilat
+parameter sdIlat = 20;							// seed value for Ilat
+
+
+integer kap_i =0;
+
+analog begin
+	
+	@(initial_step)begin
+		// Set Breakdown Voltage
+		VB = VB0*(1.0 + VBTC*(T - T0));
+		// ... update this later to take into account temperature effects
+		// calculate excess bias
+	end
+	
+	if ((V(photon) > PhTh) && (aval == 0))begin
+		aval = 1; // Start the avalanche
+		
+		// Schedule next RC events
+	//	deltatcr_i = $rdist_exponential(seedcr_i,taucr_i);
+	//	tcr_i = $abstime + deltatcr_i;
+		// ...
+	end
+	///////////////////// DARK COUNT /////////////////////
+	@(timer(tcg))begin
+		counter_cg = counter_cg + 1; // Increment the CG counter
+		$display( "Carrier generated at t = %E.\n", $abstime );
+		if (aval == 0)begin
+		uniformProb = $rdist_uniform(seedtr,0.0,1.0);
+			if ((V(k,a) - VB0) > 0) // Evaluate the Triggering Probability based on the excess bias
+				Ptr = 1.0 - exp(-(V(k,a) - VB0)/(etaT*VB));
+			else
+				Ptr = 0.0;
+			
+		end
+		if (uniformProb < Ptr)begin // DC event
+				aval = 1; // Start the Avalanche
+				counter_dc = counter_dc + 1; // Update the DC counter
+				// Schedule next RC events
+				deltatcr_i = $rdist_exponential(seedcr_i,taucr_i);
+				tcr_i = $abstime + deltatcr_i;
+				$display( "Darkcount at t = %E.\n", $abstime );
+				//...
+		end
+
+		// Schedule next CG event
+		deltatcg = $rdist_exponential(seed_cg,tau_cg);
+		tcg = $abstime + deltatcg;
+	end
+
+	///////// STATIC AND DYNAMIC CHARACTERISTIC //////////
+	
+	Ibrk = (Vn/Rbrk)*ln(1 + limexp((V(k,a) - VB0)/Vn)); // Update later for piecewise linear IV curve
+	Qj  = AD*(phi*Cj0/(1-mj))*pow((1+V(SPAD)/phi),1-mj);
+	Qks = Cks*V(k);
+	Qas = Cas*V(a);	
+    //...
+	////////////////////// TURN-OFF //////////////////////
+	if ((aval == 1) && (Ibrk < Ilat) && (V(photon) < PhTh))begin
+		aval = 0;  // Quench the avalanche
+		// Update Ilat
+		Ilat = $rdist_normal(sdIlat,mIlat,sigIlat);
+	end
+	/////////// SET THE  CURRENT CONTRIBUTIONS ///////////
+	Ispad = Is + aval*Ibrk;
+	I(SPAD) <+ Ispad + ddt(Qj) + ddt(Qks);
+end
+endmodule

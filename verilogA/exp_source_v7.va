@@ -1,0 +1,280 @@
+// Developed by Pouyan Keshavarzian, Ph.D.
+// Exponentially distributed inter-arrival times with ability to generate afterpulses to mimic SPAD behavior
+
+`include "constants.vams"
+`include "disciplines.vams"
+
+module exp_source_withAftp_V7(vout);
+
+electrical vout;
+parameter real vlogic_high = 2;
+parameter real vlogic_low  = 0 ;
+parameter real tdel=0 from [0:inf);
+parameter real trise=0.1n;
+parameter real tfall=0.1n;
+parameter real photonPulseWidth = 0.01n;
+real photon; 								// First photon arrival time
+real deltaPhoton;							// delta time for next photon arrival
+real detected;
+integer counterPhoton;						
+parameter real detectionRate=50.0e6;
+real tau_photon;							// mean value of carrier generation (expon distributed)
+parameter seed_photon = 417;					// seed value for carrier generation
+integer new_seed_photon;
+integer new_seed_carrier;
+integer new_seed_uniform;
+integer myseed=225;
+real vout_val;
+integer bit;
+
+parameter real etaT = 0.131;
+parameter real VEX = 1.0;
+parameter real VB = 20.0;
+
+// AFTERPULSE
+real tcr_1;
+//parameter real tau_1=15e-9;
+parameter real tau_1=10e-9;
+parameter real rate1= 0.01;
+real rate_calc=0;
+real tcr_2;
+parameter real tau_2 = 50e-9;
+parameter real rate2= 0.01;
+real tcr_3;
+parameter real tau_3= 250e-9;
+parameter real rate3= 0.01;
+real tcr_4;
+parameter real tau_4= 500e-9;
+parameter real rate4= 0.05;
+parameter real deadtime = 5e-9;
+real time_of_last_aval=0;
+real next_aval_event=0;
+real previous_aval_event=0;
+real ave_tau1;
+real num_c1_realeases;
+real recharge_time;
+
+parameter seedtr = 20;							// Unifrom distribution seed for comparing to triggering probability
+integer seedcr_1 = 750;
+integer seedcr_2 = 320;
+integer seedcr_3 = 140;
+parameter seedcr_4 = 111;
+integer newseed = 0;
+real uniformProb; 								// Compare the triggering probability against a uniformally distributed random var for avalanche gen
+real deltatcr_1;
+integer aftpcounter1 = 0;
+real deltatcr_2;
+integer aftpcounter2 = 0;
+real deltatcr_3;
+integer aftpcounter3 = 0;
+real deltatcr_4;
+integer aftpcounter4 = 0;
+
+real prev_aval_time;
+real p_ap1;
+real p_ap2;
+real p_ap3;
+real p_ap4;
+real p_ap1_av;
+real p_ap2_av;
+real p_ap3_av;
+integer afterpulse_total = 0;
+real avalanche_total = 0;
+real photons_total = 0;
+integer trap_that_got_reset = 0;
+
+real non_ignited_total = 0;
+real non_ignited_photon = 0;
+real non_ignited_trap1 = 0;
+real non_ignited_trap2 = 0;
+real non_ignited_trap3 = 0;
+real APP;
+integer trapped_1;
+integer trapped_2;
+integer trapped_3;
+integer trapped_4;
+
+integer non_ignited_trap1_photon_blocked;
+integer non_ignited_photon_trap1_blocked;
+integer prev_aval_state; // keeps track of whether current avalanche is coming from photon or afterpulse
+integer num_carrier_releases;
+
+
+
+analog begin
+	 
+	@ (initial_step ) begin
+	 	bit = 0;
+		vout_val = vlogic_low;
+		detected=50e-9; // This is just some intial value greater than the intial photon arrival time above
+		avalanche_total =0;
+		tau_photon = 1.0/detectionRate;
+		deltaPhoton = 0.0;
+		trapped_1 = 0;
+		ave_tau1 = 0;
+		num_c1_realeases=0;
+		counterPhoton = 0;
+		previous_aval_event=0;
+    end
+
+
+	@(timer(recharge_time))begin
+		bit = 0;
+		vout_val = (vlogic_high - vlogic_low) * bit + vlogic_low;
+	end
+
+	@(timer(detected))begin
+		counterPhoton = counterPhoton + 1; 
+		//$display( "In detected loop \n" );
+		// in case avalanche is occuring from afterpulse ( or was extended from arrival in deadtime
+		if(bit==0) begin
+			// check to see if it falls in deadtime
+			bit = 1;
+			vout_val = (vlogic_high - vlogic_low) * bit + vlogic_low;
+			if(($abstime - previous_aval_event) > (deadtime)) begin
+				avalanche_total = avalanche_total + 1;
+				previous_aval_event = $abstime;
+				prev_aval_state = 0;
+				myseed=new_seed_photon+$random;
+				new_seed_photon = $random(myseed);
+				deltaPhoton = $rdist_exponential(new_seed_photon,tau_photon);
+				detected = $abstime + deltaPhoton;
+				//$display( "Photon Bang! at t = %E.\n", $abstime );
+				if(trapped_1 == 1) begin
+					trap_that_got_reset = trap_that_got_reset +1;
+				end
+				myseed=new_seed_carrier+$random;
+				new_seed_carrier = $random(myseed);
+				deltatcr_1 = $rdist_exponential(new_seed_carrier,tau_1);
+				ave_tau1 = ave_tau1+deltatcr_1;
+				num_c1_realeases= num_c1_realeases+1;
+				trapped_1 = 1;
+				tcr_1 = $abstime + deltatcr_1;
+			end
+			//else begin			
+				// stay in detected and extend avalanche I.E PARALYZABLE DEAD TIME
+				//previous_aval_event = $abstime;
+				//deltaPhoton = $rdist_exponential(seed_photon,tau_photon);
+				//detected = $abstime + deltaPhoton;
+				//vout_val = vlogic_high;
+			//	//photons_total = photons_total + 1;
+				//non_ignited_photon = non_ignited_photon+1;
+			//end 
+		end
+
+		// if an avalanche is happening then come back later
+		else begin
+			// stay in detected and extend avalanche I.E PARALYZABLE DEAD TIME
+			// comment below to make it non para i.e. active quench
+			//previous_aval_event = $abstime;
+			myseed=new_seed_photon+$random;
+			new_seed_photon = $random(myseed);
+			deltaPhoton = $rdist_exponential(new_seed_photon,tau_photon);
+			detected = $abstime + deltaPhoton;
+			//photons_total = photons_total + 1;
+			if(prev_aval_state ==1)begin
+				non_ignited_photon_trap1_blocked=non_ignited_photon_trap1_blocked+1;
+			end
+			else begin
+				non_ignited_photon = non_ignited_photon+1;
+			end
+			
+		end
+		recharge_time = $abstime +photonPulseWidth+trise +tfall + deadtime;
+	end
+
+	@(timer(tcr_1))begin
+		trapped_1 = 0;
+		myseed=new_seed_uniform+$random;
+		new_seed_uniform = $random(myseed);
+		uniformProb = $rdist_uniform(new_seed_uniform,0.0,1.0);
+		p_ap1 = rate1*exp(-(deltatcr_1)/tau_1);
+		num_carrier_releases=num_carrier_releases+1;
+		p_ap1_av=p_ap1_av+p_ap1;
+
+		if (p_ap1 > uniformProb)begin
+			if(bit == 0) begin
+				if(($abstime - previous_aval_event) > (deadtime)) begin
+					bit = 1;
+					vout_val = (vlogic_high - vlogic_low) * bit + vlogic_low;
+					aftpcounter1 = aftpcounter1+1;
+					avalanche_total = avalanche_total + 1;
+					previous_aval_event = $abstime;
+					prev_aval_state = 1;
+					// Setup release carriers
+					myseed=new_seed_carrier+$random;
+					new_seed_carrier = $random(myseed);
+					deltatcr_1 = $rdist_exponential(new_seed_carrier,tau_1);
+					ave_tau1 = ave_tau1+deltatcr_1;
+					num_c1_realeases= num_c1_realeases+1;
+					trapped_1 = 1;
+					tcr_1 = $abstime + deltatcr_1;
+				end
+				non_ignited_trap1 = non_ignited_trap1+1;
+			end
+			else begin
+				// stay in detected and extend avalanche I.E PARALYZABLE DEAD TIME
+				// comment below to make it non para i.e. active quench
+				//previous_aval_event = $abstime;
+				non_ignited_trap1 = non_ignited_trap1+1;
+				non_ignited_trap1_photon_blocked=non_ignited_trap1_photon_blocked+1;
+			end
+			recharge_time = $abstime +photonPulseWidth+trise +tfall + deadtime;
+		end
+		
+		// always make sure a photon is generated to stop the loop from ending. 
+		if(detected < $abstime )begin
+			myseed=new_seed_photon+$random;
+			new_seed_photon = $random(myseed);
+			deltaPhoton = $rdist_exponential(new_seed_photon,tau_photon);
+			detected = $abstime + deltaPhoton;
+		end
+	end
+
+
+	afterpulse_total = aftpcounter1+ aftpcounter2 + aftpcounter3 + aftpcounter4;
+	V(vout) <+ transition(vout_val,tdel,trise,tfall);
+	@(final_step) begin
+		APP = afterpulse_total/avalanche_total;
+		p_ap1_av = p_ap1_av/(num_carrier_releases);
+		p_ap2_av = p_ap2_av/(afterpulse_total+avalanche_total);
+		p_ap3_av = p_ap3_av/(afterpulse_total+avalanche_total);
+		ave_tau1 = ave_tau1/num_c1_realeases;
+		non_ignited_total = non_ignited_photon+non_ignited_trap1+non_ignited_trap2+non_ignited_trap3;
+		$display( "-----------------------------------------------------\n");
+		$display( "Total photon arrivals calculated = %E.\n", (avalanche_total-afterpulse_total+non_ignited_photon) );
+		$display( "Total photon arrivals variable keeping track = %E.\n", counterPhoton );
+		$display( "Photon events that fell inside deadtime = %E.\n", non_ignited_photon );
+		$display( "of which %E where actually blocked by ongoing afterpulses.\n", non_ignited_photon_trap1_blocked );
+		$display( "Total photons which caused avalanches = %E.\n", (avalanche_total-afterpulse_total) );
+		$display( "-----------------------------------------------------\n");
+
+		$display( "Trap1 events that fell inside deadtime = %E.\n", non_ignited_trap1 );
+		$display( "of which %E where actually blocked by photons.\n", non_ignited_trap1_photon_blocked );		
+	
+		$display( "Trap1 which was reset by an avalanche %E.\n", trap_that_got_reset );
+		//$display( "Trap2 events that fell inside deadtime = %E.\n", non_ignited_trap2 );
+		//$display( "Trap3 events that fell inside deadtime = %E.\n", non_ignited_trap3 );
+		//$display( "Total events that fell inside deadtime = %E.\n", non_ignited_total );
+
+		$display( "Afterpulses from trap 1 = %E.\n", aftpcounter1 );
+		//$display( "Afterpulses from trap 2 = %E.\n", aftpcounter2 );
+		//$display( "Afterpulses from trap 3 = %E.\n", aftpcounter3 );
+		//$display( "Afterpulses from trap 4 = %E.\n", aftpcounter4 );
+		$display( "Total afterpulse = %E.\n", afterpulse_total );
+		$display( "Average lifetime = %E.\n", ave_tau1 );
+		$display( "-----------------------------------------------------\n");
+		$display( "Total avalanches = %E.\n", avalanche_total );
+		$display( "-----------------------------------------------------\n");
+		$display( "Total Afterpulsing Probability = %E.\n", APP );
+		$display( "-----------------------------------------------------\n");
+		$display( "Note below I've averaged the calculated probaility of afterpulse at each step when carrier is released\n");
+		$display( "Average Afterpulsing Probability first trap = %E.\n", p_ap1_av );
+		//$display( "Average Afterpulsing Probability second trap = %E.\n", p_ap2_av );
+		//$display( "Average Afterpulsing Probability third trap = %E.\n", p_ap3_av );
+		$display( "-----------------------------------------------------\n");
+
+	end
+		
+end
+endmodule
